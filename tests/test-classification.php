@@ -24,4 +24,22 @@ if ( 'potentially_unused' === uic_classify_reference_status( false, true, true )
 	fwrite( STDERR, "FAIL: absence must not claim definite non-use\n" );
 	$failures++;
 }
+
+$plugin_source = file_get_contents( __DIR__ . '/../unused-image-cleaner/unused-image-cleaner.php' );
+$safety_checks = array(
+	array( false !== strpos( $plugin_source, "current_user_can( 'manage_options' )" ), 'admin capability is required' ),
+	array( false !== strpos( $plugin_source, "check_admin_referer( 'uic_confirm_delete', 'uic_nonce' )" ), 'deletion request verifies a nonce' ),
+	array( false !== strpos( $plugin_source, 'empty( $_POST[\'uic_final_confirm\'] )' ), 'deletion requires a separate final confirmation' ),
+	array( false !== strpos( $plugin_source, '\'potentially_unused\' !== $check[\'status\']' ), 'fresh scan excludes used and uncertain images' ),
+	array( false !== strpos( $plugin_source, 'wp_trash_post( $id )' ), 'selected image is moved to WordPress Trash' ),
+	array( false === strpos( $plugin_source, 'wp_delete_attachment(' ) && false === strpos( $plugin_source, 'unlink(' ), 'plugin does not call permanent file deletion' ),
+);
+foreach ( $safety_checks as $check ) {
+	if ( $check[0] ) {
+		echo 'PASS: ' . $check[1] . "\n";
+	} else {
+		fwrite( STDERR, 'FAIL: ' . $check[1] . "\n" );
+		$failures++;
+	}
+}
 exit( $failures ? 1 : 0 );
