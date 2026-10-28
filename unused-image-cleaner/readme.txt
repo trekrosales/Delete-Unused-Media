@@ -2,7 +2,7 @@
 Contributors: trekrosales
 Requires at least: 6.2
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.0.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -29,6 +29,10 @@ No. After explicit selection and two-step confirmation, eligible items are sent 
 No. References in external systems, hardcoded theme or plugin code, CSS, JavaScript, caches, and third-party services may not be detected. Review every candidate and maintain backups.
 
 == Changelog ==
+
+= 1.0.1 =
+* Treat database query failures as uncertain and block them from deletion.
+* Keep trashed attachments out of cached scan results.
 
 = 1.0.0 =
 * Initial release with batched read-only scanning, searchable/paginated review, and explicit Trash workflow.

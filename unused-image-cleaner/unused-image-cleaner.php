@@ -2,10 +2,12 @@
 /**
  * Plugin Name: Unused Image Cleaner
  * Description: Safely audits image attachments for database references; potential matches can be reviewed and moved to the WordPress Trash manually.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Requires at least: 6.2
  * Requires PHP: 7.4
  * Author: Trekrosales
+ * License: GPL-2.0-or-later
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: unused-image-cleaner
  * Domain Path: /languages
  */
@@ -14,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'UIC_VERSION', '1.0.0' );
+define( 'UIC_VERSION', '1.0.1' );
 define( 'UIC_FILE', __FILE__ );
 define( 'UIC_DIR', plugin_dir_path( __FILE__ ) );
 require_once UIC_DIR . 'includes/classification.php';
@@ -84,9 +86,14 @@ function uic_check_attachment_references( $attachment_id ) {
 	}
 	$needles = array_values( array_unique( array_filter( $needles ) ) );
 	$found  = array();
+	$scan_complete = true;
 
 	// Exact featured-image references avoid false positives from unrelated numeric values.
+	$wpdb->last_error = '';
 	$featured = $wpdb->get_var( $wpdb->prepare( "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_thumbnail_id' AND meta_value = %s LIMIT 1", (string) $attachment_id ) );
+	if ( $wpdb->last_error ) {
+		$scan_complete = false;
+	}
 	if ( $featured ) {
 		$found[] = __( 'Featured image metadata', 'unused-image-cleaner' );
 	}
@@ -94,7 +101,11 @@ function uic_check_attachment_references( $attachment_id ) {
 	// Search posts/pages and builder documents for original and generated image URLs/paths.
 	foreach ( $needles as $needle ) {
 		$like = '%' . $wpdb->esc_like( $needle ) . '%';
+		$wpdb->last_error = '';
 		$post_reference = $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM {$wpdb->posts} WHERE ID <> %d AND (post_content LIKE %s OR post_excerpt LIKE %s) LIMIT 1", $attachment_id, $like, $like ) );
+		if ( $wpdb->last_error ) {
+			$scan_complete = false;
+		}
 		if ( $post_reference ) {
 			$found[] = __( 'Post, page, block, or page-builder content', 'unused-image-cleaner' );
 			break;
@@ -105,7 +116,11 @@ function uic_check_attachment_references( $attachment_id ) {
 	if ( empty( $found ) || count( $found ) < 2 ) {
 		foreach ( $needles as $needle ) {
 			$like = '%' . $wpdb->esc_like( $needle ) . '%';
+			$wpdb->last_error = '';
 			$meta_reference = $wpdb->get_var( $wpdb->prepare( "SELECT meta_id FROM {$wpdb->postmeta} WHERE post_id <> %d AND meta_value LIKE %s LIMIT 1", $attachment_id, $like ) );
+			if ( $wpdb->last_error ) {
+				$scan_complete = false;
+			}
 			if ( $meta_reference ) {
 				$found[] = __( 'Post metadata or page-builder data', 'unused-image-cleaner' );
 				break;
@@ -116,21 +131,26 @@ function uic_check_attachment_references( $attachment_id ) {
 	// Site options, widgets, and theme settings can store image paths or URLs.
 	foreach ( $needles as $needle ) {
 		$like = '%' . $wpdb->esc_like( $needle ) . '%';
+		$wpdb->last_error = '';
 		$option_reference = $wpdb->get_var( $wpdb->prepare( "SELECT option_id FROM {$wpdb->options} WHERE option_value LIKE %s LIMIT 1", $like ) );
+		if ( $wpdb->last_error ) {
+			$scan_complete = false;
+		}
 		if ( $option_reference ) {
 			$found[] = __( 'Site option, widget, or theme setting', 'unused-image-cleaner' );
 			break;
 		}
 	}
 
-	$classification = uic_classify_reference_status( ! empty( $found ), file_exists( get_attached_file( $attachment_id ) ), is_array( $metadata ) && ! empty( $metadata ) );
+	$classification = uic_classify_reference_status( ! empty( $found ), file_exists( get_attached_file( $attachment_id ) ), is_array( $metadata ) && ! empty( $metadata ), $scan_complete );
 	if ( 'used' === $classification ) {
 		return array( 'status' => 'used', 'sources' => array_values( array_unique( $found ) ) );
 	}
 
 	// Absence from searchable database fields is not proof that a file is unused.
 	if ( 'uncertain' === $classification ) {
-		return array( 'status' => 'uncertain', 'sources' => array( __( 'Attachment file or metadata is incomplete; review manually.', 'unused-image-cleaner' ) ) );
+		$reason = $scan_complete ? __( 'Attachment file or metadata is incomplete; review manually.', 'unused-image-cleaner' ) : __( 'One or more database reference checks failed; review manually.', 'unused-image-cleaner' );
+		return array( 'status' => 'uncertain', 'sources' => array( $reason ) );
 	}
 	return array( 'status' => 'potentially_unused', 'sources' => array( __( 'No database reference was found in the scanned sources; external or hardcoded references may still exist.', 'unused-image-cleaner' ) ) );
 }
@@ -143,6 +163,8 @@ function uic_ajax_scan_batch() {
 	check_ajax_referer( 'uic_scan', 'nonce' );
 	$page  = max( 1, absint( $_POST['page'] ?? 1 ) );
 	$limit = 25;
+	global $wpdb;
+	$wpdb->last_error = '';
 	$query = new WP_Query(
 		array(
 			'post_type'      => 'attachment',
@@ -156,6 +178,9 @@ function uic_ajax_scan_batch() {
 			'no_found_rows'  => false,
 		)
 	);
+	if ( $wpdb->last_error ) {
+		wp_send_json_error( array( 'message' => __( 'The image list could not be read from the database. No scan results were changed.', 'unused-image-cleaner' ) ), 500 );
+	}
 	$key     = 'uic_scan_' . get_current_user_id();
 	$results = 1 === $page ? array() : get_transient( $key );
 	if ( ! is_array( $results ) ) {
@@ -270,8 +295,10 @@ function uic_handle_admin_post() {
 			}
 			if ( wp_trash_post( $id ) ) {
 				$moved++;
+				unset( $results[ $id ] );
 			}
 		}
+		set_transient( 'uic_scan_' . get_current_user_id(), $results, DAY_IN_SECONDS );
 		wp_safe_redirect( add_query_arg( array( 'page' => 'uic-image-cleaner', 'uic_trashed' => $moved ), admin_url( 'upload.php' ) ) );
 		exit;
 	}
